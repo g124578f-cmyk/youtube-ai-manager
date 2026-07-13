@@ -43,7 +43,7 @@ jobs:
 
       - name: Commit new report
         run: |
-          if git diff --quiet -- reports data; then
+          if [ -z "$(git status --porcelain -- reports data)" ]; then
             echo "No report changes to commit."
             exit 0
           fi
