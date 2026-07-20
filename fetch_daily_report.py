@@ -1,4 +1,4 @@
-"""抓取半盞江湖前一日 YouTube 私人數據並產生 Markdown/CSV。"""
+"""抓取半盞江湖 YouTube 私人數據，並回補最近數日的 Markdown/CSV。"""
 
 from __future__ import annotations
 
@@ -19,6 +19,17 @@ SCOPES = [
     "https://www.googleapis.com/auth/yt-analytics.readonly",
 ]
 CHANNEL_NAME = "半盞江湖 Half Cup of Jianghu"
+BACKFILL_DAYS = 7
+DAILY_METRIC_FIELDS = (
+    "views",
+    "estimated_minutes_watched",
+    "average_view_duration",
+    "subscribers_gained",
+    "subscribers_lost",
+    "likes",
+    "comments",
+    "shares",
+)
 
 
 @dataclass
@@ -35,6 +46,7 @@ class DailyStats:
     current_subscribers: int = 0
     lifetime_views: int = 0
     video_count: int = 0
+    analytics_complete: bool = False
 
 
 def previous_day(now: datetime | None = None) -> date:
@@ -45,6 +57,13 @@ def previous_day(now: datetime | None = None) -> date:
     else:
         now = now.astimezone(ZoneInfo("Asia/Taipei"))
     return now.date() - timedelta(days=1)
+
+
+def backfill_dates(end: date, days: int = BACKFILL_DAYS) -> list[date]:
+    """回傳由舊到新的回補日期，結尾為 end。"""
+    if days < 1:
+        raise ValueError("回補天數至少必須為 1")
+    return [end - timedelta(days=offset) for offset in range(days - 1, -1, -1)]
 
 
 def env(name: str) -> str:
@@ -70,11 +89,10 @@ def metric_row(response: dict, defaults: list[float]) -> list[float]:
     return rows[0] if rows else defaults
 
 
-def fetch_data(target: date) -> tuple[DailyStats, list[dict]]:
+def build_clients() -> tuple[object, object, dict]:
     credentials = credentials_from_env()
     youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
     analytics = build("youtubeAnalytics", "v2", credentials=credentials, cache_discovery=False)
-
     channel_response = youtube.channels().list(part="snippet,statistics", mine=True).execute()
     items = channel_response.get("items", [])
     if not items:
@@ -86,6 +104,17 @@ def fetch_data(target: date) -> tuple[DailyStats, list[dict]]:
             f"選錯品牌頻道：目前為 {channel['snippet']['title']} ({channel['id']})，"
             f"但 Secret 設定為 {expected_id}。請重新執行 authorize.py。"
         )
+    return youtube, analytics, channel
+
+
+def fetch_data(
+    target: date,
+    youtube: object | None = None,
+    analytics: object | None = None,
+    channel: dict | None = None,
+) -> tuple[DailyStats, list[dict]]:
+    if youtube is None or analytics is None or channel is None:
+        youtube, analytics, channel = build_clients()
 
     day = target.isoformat()
     metrics = (
@@ -95,6 +124,8 @@ def fetch_data(target: date) -> tuple[DailyStats, list[dict]]:
     daily_response = analytics.reports().query(
         ids="channel==MINE", startDate=day, endDate=day, metrics=metrics
     ).execute()
+    rows = daily_response.get("rows", [])
+    analytics_complete = bool(rows)
     values = metric_row(daily_response, [0] * 8)
     statistics = channel["statistics"]
     stats = DailyStats(
@@ -110,6 +141,7 @@ def fetch_data(target: date) -> tuple[DailyStats, list[dict]]:
         current_subscribers=int(statistics.get("subscriberCount", 0)),
         lifetime_views=int(statistics.get("viewCount", 0)),
         video_count=int(statistics.get("videoCount", 0)),
+        analytics_complete=analytics_complete,
     )
 
     top_response = analytics.reports().query(
@@ -140,7 +172,13 @@ def render_markdown(stats: DailyStats, top_videos: list[dict]) -> str:
         for index, video in enumerate(top_videos, 1)
     ]
     if not top_lines:
-        top_lines = ["| — | 當日無影片觀看資料 | 0 |"]
+        message = "當日無影片觀看資料" if stats.analytics_complete else "資料處理中，稍後自動補抓"
+        top_lines = [f"| — | {message} | — |"]
+    status_note = (
+        "> ✅ YouTube Analytics 已回傳此日明細；數值仍可能由 YouTube 後續修正。"
+        if stats.analytics_complete
+        else "> ⚠️ YouTube Analytics 尚未完成此日資料；畫面中的 0 不代表沒有流量，系統會在未來 7 天自動補抓。"
+    )
     return f"""# {CHANNEL_NAME}｜YouTube 每日報表
 
 **報表日期：{stats.report_date}（台灣時間）**
@@ -173,8 +211,52 @@ def render_markdown(stats: DailyStats, top_videos: list[dict]) -> str:
 |---:|---|---:|
 {chr(10).join(top_lines)}
 
-> YouTube Analytics 的資料可能延遲或後續修正；本報表為 API 執行當下取得的數值。
+{status_note}
 """
+
+
+def read_history(path: Path) -> dict[str, DailyStats]:
+    if not path.exists():
+        return {}
+    result: dict[str, DailyStats] = {}
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        for row in csv.DictReader(handle):
+            day = row.get("report_date", "")
+            if not day:
+                continue
+            result[day] = DailyStats(
+                report_date=day,
+                views=int(float(row.get("views") or 0)),
+                estimated_minutes_watched=float(row.get("estimated_minutes_watched") or 0),
+                average_view_duration=float(row.get("average_view_duration") or 0),
+                subscribers_gained=int(float(row.get("subscribers_gained") or 0)),
+                subscribers_lost=int(float(row.get("subscribers_lost") or 0)),
+                likes=int(float(row.get("likes") or 0)),
+                comments=int(float(row.get("comments") or 0)),
+                shares=int(float(row.get("shares") or 0)),
+                current_subscribers=int(float(row.get("current_subscribers") or 0)),
+                lifetime_views=int(float(row.get("lifetime_views") or 0)),
+                video_count=int(float(row.get("video_count") or 0)),
+                analytics_complete=str(row.get("analytics_complete", "")).lower() == "true",
+            )
+    return result
+
+
+def merge_stats(
+    existing: DailyStats | None,
+    fetched: DailyStats,
+    update_snapshot: bool,
+) -> DailyStats:
+    """合併回補結果；空回應不能覆蓋既有明細，舊日期保留當時總量快照。"""
+    if existing and not fetched.analytics_complete:
+        for name in DAILY_METRIC_FIELDS:
+            setattr(fetched, name, getattr(existing, name))
+        fetched.analytics_complete = existing.analytics_complete
+    if existing and not update_snapshot:
+        fetched.current_subscribers = existing.current_subscribers
+        fetched.lifetime_views = existing.lifetime_views
+        fetched.video_count = existing.video_count
+    return fetched
 
 
 def upsert_history(path: Path, stats: DailyStats) -> None:
@@ -196,15 +278,31 @@ def upsert_history(path: Path, stats: DailyStats) -> None:
 
 def main() -> int:
     try:
-        target = previous_day()
-        stats, top_videos = fetch_data(target)
-        report_path = Path("reports") / f"{target.isoformat()}.md"
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(render_markdown(stats, top_videos), encoding="utf-8")
-        upsert_history(Path("data/history.csv"), stats)
-        print(f"完成：{report_path} 與 data/history.csv")
-        if stats.views == 0:
-            print("提醒：當日 API 回傳 0 次觀看，可能確實無資料或 Analytics 尚未完成處理。")
+        latest = previous_day()
+        history_path = Path("data/history.csv")
+        history = read_history(history_path)
+        youtube, analytics, channel = build_clients()
+        reports_dir = Path("reports")
+        reports_dir.mkdir(parents=True, exist_ok=True)
+
+        for target in backfill_dates(latest):
+            day = target.isoformat()
+            existing = history.get(day)
+            fetched, top_videos = fetch_data(target, youtube, analytics, channel)
+            api_complete = fetched.analytics_complete
+            stats = merge_stats(existing, fetched, update_snapshot=target == latest)
+            report_path = reports_dir / f"{day}.md"
+
+            # API 有明細時重建報表；昨日尚未完成時仍更新最新總量快照。
+            # 舊日若曾有完整報表，空回應不會將它覆蓋成 0。
+            if api_complete or target == latest or not report_path.exists():
+                report_path.write_text(render_markdown(stats, top_videos), encoding="utf-8")
+            upsert_history(history_path, stats)
+            history[day] = stats
+            state = "已完成" if stats.analytics_complete else "處理中"
+            print(f"{day}：Analytics {state}")
+
+        print(f"完成：回補最近 {BACKFILL_DAYS} 天報表與 data/history.csv")
         return 0
     except HttpError as exc:
         status = getattr(exc.resp, "status", "未知")
@@ -223,4 +321,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
