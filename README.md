@@ -1,11 +1,14 @@
-# YouTube Analytics 自動報表（半盞江湖）
+# YouTube Analytics 多頻道自動報表
 
-每天台灣時間凌晨 03:30，自動讀取「半盞江湖 Half Cup of Jianghu」前一天的頻道快照，並重新補抓最近 7 天的 YouTube Studio 私人分析數據，產生：
+每天台灣時間凌晨 03:30，自動讀取五個頻道前一天的頻道快照，並重新補抓最近 7 天的 YouTube Studio 私人分析數據。
 
-- `reports/YYYY-MM-DD.md`：容易閱讀的每日報表
-- `data/history.csv`：可用 Excel 開啟的歷史資料
+- `reports/YYYY-MM-DD.md`、`data/history.csv`：半盞江湖（保留原路徑）
+- `reports/yoru/`、`data/yoru-history.csv`：Yoru Matsuri Lofi
+- `reports/child-prodigy/`、`data/child-prodigy-history.csv`：Child Prodigy
+- `reports/aurix/`、`data/aurix-history.csv`：AURIX
+- `reports/betty/`、`data/betty-history.csv`：Betty®
 
-目前只支援一個頻道，不含 OpenAI API 或 AI 分析。OAuth JSON、密碼與 token 都不會寫入 repository。
+不含 OpenAI API 或 AI 分析。OAuth JSON、密碼與 token 都不會寫入 repository。每個頻道獨立驗證及輸出；其中一個頻道暫時失敗時，其餘頻道仍會繼續處理。
 
 ## 會取得哪些資料
 
@@ -57,8 +60,8 @@ python authorize.py
 
 瀏覽器開啟後：
 
-1. 登入擁有半盞江湖的 Google 帳號。
-2. 若 Google 顯示品牌頻道選擇，選「半盞江湖 Half Cup of Jianghu」。
+1. 登入擁有目標頻道的 Google 帳號。
+2. 若 Google 顯示品牌頻道選擇，選擇這次要授權的品牌頻道。
 3. 同意唯讀權限。
 4. 回到 PowerShell，確認顯示的頻道名稱及 ID，輸入大寫 `YES`。
 5. 畫面會顯示 `GOOGLE_REFRESH_TOKEN` 及 `YOUTUBE_CHANNEL_ID`。只把它們存入 GitHub Secrets。
@@ -73,8 +76,12 @@ python authorize.py
 |---|---|
 | `GOOGLE_CLIENT_ID` | Desktop App 的 Client ID |
 | `GOOGLE_CLIENT_SECRET` | Desktop App 的 Client secret |
-| `GOOGLE_REFRESH_TOKEN` | `authorize.py` 顯示的 refresh token |
-| `YOUTUBE_CHANNEL_ID` | `authorize.py` 確認後顯示的半盞江湖頻道 ID |
+| `GOOGLE_REFRESH_TOKEN` | 半盞江湖 refresh token |
+| `YOUTUBE_CHANNEL_ID` | 半盞江湖頻道 ID |
+| `YORU_REFRESH_TOKEN` / `YORU_CHANNEL_ID` | Yoru 的 token / 頻道 ID |
+| `CHILD_PRODIGY_REFRESH_TOKEN` / `CHILD_PRODIGY_CHANNEL_ID` | Child Prodigy 的 token / 頻道 ID |
+| `AURIX_REFRESH_TOKEN` / `AURIX_CHANNEL_ID` | AURIX 的 token / 頻道 ID |
+| `BETTY_REFRESH_TOKEN` / `BETTY_CHANNEL_ID` | Betty® 的 token / 頻道 ID |
 
 Secret 儲存後無法再次查看明文，這是正常的。絕對不要將值寫進 `.env` 後提交，也不要放在 Issue、聊天或 Actions log。
 
