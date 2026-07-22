@@ -36,7 +36,7 @@ def main() -> int:
             }
         }
         flow = InstalledAppFlow.from_client_config(config, SCOPES)
-        print("即將開啟瀏覽器。請登入擁有『半盞江湖』的 Google 帳號，並選擇該品牌頻道。")
+        print("即將開啟瀏覽器。請登入擁有目標頻道的 Google 帳號，並選擇正確的品牌頻道。")
         credentials = flow.run_local_server(
             host="localhost",
             port=0,
@@ -56,7 +56,7 @@ def main() -> int:
         channel_id = channel["id"]
         print(f"\n偵測到頻道：{title}")
         print(f"頻道 ID：{channel_id}")
-        answer = input("這是『半盞江湖 Half Cup of Jianghu』嗎？輸入 YES 確認：").strip()
+        answer = input(f"這是『{title}』嗎？輸入大寫 YES 確認：").strip()
         if answer != "YES":
             print("已取消。請重新執行並在 Google 畫面選擇正確品牌頻道。")
             return 2
@@ -79,4 +79,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
