@@ -2,6 +2,7 @@ import csv
 from datetime import datetime, timezone
 
 from fetch_daily_report import (
+    CHANNELS,
     DailyStats,
     backfill_dates,
     merge_stats,
@@ -54,6 +55,18 @@ def test_markdown_format_contains_sections_and_top_video():
     assert "| 平均觀看時間 | 01:31 |" in report
     assert "[測試影片](https://youtu.be/abc123)" in report
     assert "Analytics 已回傳" in report
+
+
+def test_markdown_accepts_channel_name():
+    report = render_markdown(sample_stats(), [], "Betty®")
+    assert report.startswith("# Betty®｜YouTube 每日報表")
+
+
+def test_channel_paths_are_unique_and_jianghu_is_backward_compatible():
+    assert CHANNELS[0].history_path.as_posix() == "data/history.csv"
+    assert CHANNELS[0].reports_dir.as_posix() == "reports"
+    assert len({channel.history_path for channel in CHANNELS}) == len(CHANNELS)
+    assert len({channel.reports_dir for channel in CHANNELS}) == len(CHANNELS)
 
 
 def test_pending_response_does_not_replace_existing_metrics():
