@@ -1,4 +1,4 @@
-"""抓取半盞江湖 YouTube 私人數據，並回補最近數日的 Markdown/CSV。"""
+"""抓取多個 YouTube 頻道的私人數據，並回補最近數日的 Markdown/CSV。"""
 
 from __future__ import annotations
 
@@ -29,6 +29,60 @@ DAILY_METRIC_FIELDS = (
     "likes",
     "comments",
     "shares",
+)
+
+
+@dataclass(frozen=True)
+class ChannelConfig:
+    key: str
+    name: str
+    channel_id_env: str
+    refresh_token_env: str
+    reports_dir: Path
+    history_path: Path
+
+
+CHANNELS = (
+    ChannelConfig(
+        key="jianghu",
+        name=CHANNEL_NAME,
+        channel_id_env="YOUTUBE_CHANNEL_ID",
+        refresh_token_env="GOOGLE_REFRESH_TOKEN",
+        reports_dir=Path("reports"),
+        history_path=Path("data/history.csv"),
+    ),
+    ChannelConfig(
+        key="yoru",
+        name="Yoru Matsuri Lofi 夜祭ローファイ",
+        channel_id_env="YORU_CHANNEL_ID",
+        refresh_token_env="YORU_REFRESH_TOKEN",
+        reports_dir=Path("reports/yoru"),
+        history_path=Path("data/yoru-history.csv"),
+    ),
+    ChannelConfig(
+        key="child-prodigy",
+        name="Child Prodigy",
+        channel_id_env="CHILD_PRODIGY_CHANNEL_ID",
+        refresh_token_env="CHILD_PRODIGY_REFRESH_TOKEN",
+        reports_dir=Path("reports/child-prodigy"),
+        history_path=Path("data/child-prodigy-history.csv"),
+    ),
+    ChannelConfig(
+        key="aurix",
+        name="AURIX",
+        channel_id_env="AURIX_CHANNEL_ID",
+        refresh_token_env="AURIX_REFRESH_TOKEN",
+        reports_dir=Path("reports/aurix"),
+        history_path=Path("data/aurix-history.csv"),
+    ),
+    ChannelConfig(
+        key="betty",
+        name="Betty®",
+        channel_id_env="BETTY_CHANNEL_ID",
+        refresh_token_env="BETTY_REFRESH_TOKEN",
+        reports_dir=Path("reports/betty"),
+        history_path=Path("data/betty-history.csv"),
+    ),
 )
 
 
@@ -73,10 +127,10 @@ def env(name: str) -> str:
     return value
 
 
-def credentials_from_env() -> Credentials:
+def credentials_from_env(refresh_token_env: str = "GOOGLE_REFRESH_TOKEN") -> Credentials:
     return Credentials(
         token=None,
-        refresh_token=env("GOOGLE_REFRESH_TOKEN"),
+        refresh_token=env(refresh_token_env),
         token_uri="https://oauth2.googleapis.com/token",
         client_id=env("GOOGLE_CLIENT_ID"),
         client_secret=env("GOOGLE_CLIENT_SECRET"),
@@ -89,8 +143,9 @@ def metric_row(response: dict, defaults: list[float]) -> list[float]:
     return rows[0] if rows else defaults
 
 
-def build_clients() -> tuple[object, object, dict]:
-    credentials = credentials_from_env()
+def build_clients(config: ChannelConfig | None = None) -> tuple[object, object, dict]:
+    config = config or CHANNELS[0]
+    credentials = credentials_from_env(config.refresh_token_env)
     youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
     analytics = build("youtubeAnalytics", "v2", credentials=credentials, cache_discovery=False)
     channel_response = youtube.channels().list(part="snippet,statistics", mine=True).execute()
@@ -98,7 +153,7 @@ def build_clients() -> tuple[object, object, dict]:
     if not items:
         raise RuntimeError("登入身分沒有可讀取的 YouTube 頻道，refresh token 可能屬於錯誤帳號。")
     channel = items[0]
-    expected_id = env("YOUTUBE_CHANNEL_ID")
+    expected_id = env(config.channel_id_env)
     if channel["id"] != expected_id:
         raise RuntimeError(
             f"選錯品牌頻道：目前為 {channel['snippet']['title']} ({channel['id']})，"
@@ -166,7 +221,11 @@ def format_duration(seconds: float) -> str:
     return f"{total // 60:02d}:{total % 60:02d}"
 
 
-def render_markdown(stats: DailyStats, top_videos: list[dict]) -> str:
+def render_markdown(
+    stats: DailyStats,
+    top_videos: list[dict],
+    channel_name: str = CHANNEL_NAME,
+) -> str:
     top_lines = [
         f"| {index} | [{video['title']}](https://youtu.be/{video['id']}) | {video['views']:,} |"
         for index, video in enumerate(top_videos, 1)
@@ -179,7 +238,7 @@ def render_markdown(stats: DailyStats, top_videos: list[dict]) -> str:
         if stats.analytics_complete
         else "> ⚠️ YouTube Analytics 尚未完成此日資料；畫面中的 0 不代表沒有流量，系統會在未來 7 天自動補抓。"
     )
-    return f"""# {CHANNEL_NAME}｜YouTube 每日報表
+    return f"""# {channel_name}｜YouTube 每日報表
 
 **報表日期：{stats.report_date}（台灣時間）**
 
@@ -276,33 +335,67 @@ def upsert_history(path: Path, stats: DailyStats) -> None:
         writer.writerows(filtered)
 
 
+def configured_channels() -> list[ChannelConfig]:
+    """回傳已完整設定的頻道；未完整設定者警告後略過。"""
+    result: list[ChannelConfig] = []
+    for config in CHANNELS:
+        channel_id = os.getenv(config.channel_id_env, "").strip()
+        token = os.getenv(config.refresh_token_env, "").strip()
+        if channel_id and token:
+            result.append(config)
+        elif channel_id or token:
+            print(
+                f"警告：頻道 {config.name} 的 Secrets 不完整，已略過；"
+                f"需要 {config.channel_id_env} 與 {config.refresh_token_env}",
+                file=sys.stderr,
+            )
+    if not result:
+        raise ValueError("沒有任何完成設定的頻道")
+    return result
+
+
+def process_channel(config: ChannelConfig, latest: date) -> None:
+    history = read_history(config.history_path)
+    youtube, analytics, channel = build_clients(config)
+    config.reports_dir.mkdir(parents=True, exist_ok=True)
+
+    for target in backfill_dates(latest):
+        day = target.isoformat()
+        existing = history.get(day)
+        fetched, top_videos = fetch_data(target, youtube, analytics, channel)
+        api_complete = fetched.analytics_complete
+        stats = merge_stats(existing, fetched, update_snapshot=target == latest)
+        report_path = config.reports_dir / f"{day}.md"
+
+        if api_complete or target == latest or not report_path.exists():
+            report_path.write_text(
+                render_markdown(stats, top_videos, config.name), encoding="utf-8"
+            )
+        upsert_history(config.history_path, stats)
+        history[day] = stats
+        state = "已完成" if stats.analytics_complete else "處理中"
+        print(f"[{config.name}] {day}：Analytics {state}")
+
+
 def main() -> int:
     try:
         latest = previous_day()
-        history_path = Path("data/history.csv")
-        history = read_history(history_path)
-        youtube, analytics, channel = build_clients()
-        reports_dir = Path("reports")
-        reports_dir.mkdir(parents=True, exist_ok=True)
-
-        for target in backfill_dates(latest):
-            day = target.isoformat()
-            existing = history.get(day)
-            fetched, top_videos = fetch_data(target, youtube, analytics, channel)
-            api_complete = fetched.analytics_complete
-            stats = merge_stats(existing, fetched, update_snapshot=target == latest)
-            report_path = reports_dir / f"{day}.md"
-
-            # API 有明細時重建報表；昨日尚未完成時仍更新最新總量快照。
-            # 舊日若曾有完整報表，空回應不會將它覆蓋成 0。
-            if api_complete or target == latest or not report_path.exists():
-                report_path.write_text(render_markdown(stats, top_videos), encoding="utf-8")
-            upsert_history(history_path, stats)
-            history[day] = stats
-            state = "已完成" if stats.analytics_complete else "處理中"
-            print(f"{day}：Analytics {state}")
-
-        print(f"完成：回補最近 {BACKFILL_DAYS} 天報表與 data/history.csv")
+        configs = configured_channels()
+        failures: list[str] = []
+        successes = 0
+        for config in configs:
+            try:
+                process_channel(config, latest)
+                successes += 1
+                print(f"[{config.name}] 回補最近 {BACKFILL_DAYS} 天完成")
+            except Exception as exc:
+                failures.append(f"{config.name}: {exc}")
+                print(f"[{config.name}] 失敗：{exc}", file=sys.stderr)
+        if failures:
+            print("部分頻道失敗；其他頻道已繼續處理：", file=sys.stderr)
+            for failure in failures:
+                print(f"- {failure}", file=sys.stderr)
+            return 0 if successes else 1
         return 0
     except HttpError as exc:
         status = getattr(exc.resp, "status", "未知")
